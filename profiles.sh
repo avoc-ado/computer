@@ -4,11 +4,81 @@
 
 export CODEX_CHROME_PROFILES_ROOT="${HOME}/.cache/chrome-devtools-mcp/profiles"
 
+# Optional per-profile app overrides
+export CODEX_CHROME_APP_C="${CODEX_CHROME_APP_C:-/Applications/Google Chrome.app}"
+export CODEX_CHROME_APP_P1="${CODEX_CHROME_APP_P1:-/Applications/Google Chrome Beta.app}"
+export CODEX_CHROME_APP_P2="${CODEX_CHROME_APP_P2:-/Applications/Google Chrome Dev.app}"
+export CODEX_CHROME_APP_P3="${CODEX_CHROME_APP_P3:-/Applications/Google Chrome Canary.app}"
+
+_codex_profile_port() {
+  case "$1" in
+    c) echo 9222 ;;
+    p1) echo 9223 ;;
+    p2) echo 9224 ;;
+    p3) echo 9225 ;;
+    *) echo 9226 ;;
+  esac
+}
+
+_codex_profile_app_path() {
+  case "$1" in
+    c) echo "${CODEX_CHROME_APP_C}" ;;
+    p1) echo "${CODEX_CHROME_APP_P1}" ;;
+    p2) echo "${CODEX_CHROME_APP_P2}" ;;
+    p3) echo "${CODEX_CHROME_APP_P3}" ;;
+    *) echo "${CODEX_CHROME_APP_C}" ;;
+  esac
+}
+
 _codex_profile_set() {
   local name="$1"
+  export CODEX_ENV_PROFILE="$name"
   export CODEX_CHROME_PROFILE="$name"
   export CODEX_CHROME_PROFILE_DIR="${CODEX_CHROME_PROFILES_ROOT}/${name}"
+  export CODEX_CHROME_DEBUG_PORT="$(_codex_profile_port "${name}")"
+  export CODEX_CHROME_APP="$(_codex_profile_app_path "${name}")"
+  export CODEX_CHROME_BROWSER_URL="http://127.0.0.1:${CODEX_CHROME_DEBUG_PORT}"
   mkdir -p "${CODEX_CHROME_PROFILE_DIR}"
+}
+
+_codex_chrome_is_ready() {
+  local url="$1"
+  curl -fsS --max-time 1 "${url}/json/version" >/dev/null 2>&1
+}
+
+_codex_launch_profile_chrome() {
+  if [[ -z "${CODEX_CHROME_BROWSER_URL:-}" || -z "${CODEX_CHROME_PROFILE_DIR:-}" || -z "${CODEX_CHROME_APP:-}" ]]; then
+    echo "Codex Chrome profile is not configured." >&2
+    return 1
+  fi
+
+  if _codex_chrome_is_ready "${CODEX_CHROME_BROWSER_URL}"; then
+    return 0
+  fi
+
+  if [[ ! -d "${CODEX_CHROME_APP}" ]]; then
+    echo "Chrome app not found for profile ${CODEX_CHROME_PROFILE:-unknown}: ${CODEX_CHROME_APP}" >&2
+    echo "Install channel apps (beta/dev/canary) or override CODEX_CHROME_APP_P1/P2/P3 in your shell." >&2
+    return 1
+  fi
+
+  open -na "${CODEX_CHROME_APP}" --args \
+    --remote-debugging-port="${CODEX_CHROME_DEBUG_PORT}" \
+    --user-data-dir="${CODEX_CHROME_PROFILE_DIR}" \
+    --no-first-run \
+    --no-default-browser-check \
+    about:blank >/dev/null 2>&1
+
+  local i
+  for i in {1..80}; do
+    if _codex_chrome_is_ready "${CODEX_CHROME_BROWSER_URL}"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  echo "Chrome did not expose remote debug endpoint at ${CODEX_CHROME_BROWSER_URL}" >&2
+  return 1
 }
 
 _codex_repo_root() {
@@ -50,9 +120,9 @@ _codex_env_load() {
   fi
 }
 
-p1() { export CODEX_ENV_PROFILE=p1; _codex_profile_set "p1"; }
-p2() { export CODEX_ENV_PROFILE=p2; _codex_profile_set "p2"; }
-p3() { export CODEX_ENV_PROFILE=p3; _codex_profile_set "p3"; }
+p1() { _codex_profile_set "p1"; }
+p2() { _codex_profile_set "p2"; }
+p3() { _codex_profile_set "p3"; }
 p() {
   if [[ -z "${CODEX_ENV_PROFILE:-}" ]]; then
     echo "No codex profile. Run p1, p2 or p3."
@@ -65,14 +135,16 @@ p() {
 unalias c 2>/dev/null
 
 c() {
-  _codex_env_load || return $?
-  if [[ -n "${CODEX_CHROME_PROFILE_DIR:-}" ]]; then
-    command codex \
-      -c model_providers.openai.name='"openai"' \
-      -c "model_providers.openai.env_key=OPENAI_API_KEY" \
-      -c "mcp_servers.chrome-devtools.args=[\"chrome-devtools-mcp@latest\",\"--user-data-dir=${CODEX_CHROME_PROFILE_DIR}\"]" \
-      "$@"
-    return $?
+  if [[ -z "${CODEX_CHROME_PROFILE:-}" ]]; then
+    _codex_profile_set "c"
   fi
-  command codex "$@"
+
+  _codex_env_load || return $?
+  _codex_launch_profile_chrome || return $?
+
+  command codex \
+    -c model_providers.openai.name='"openai"' \
+    -c "model_providers.openai.env_key=OPENAI_API_KEY" \
+    -c "mcp_servers.chrome-devtools.args=[\"chrome-devtools-mcp@latest\",\"--browserUrl=${CODEX_CHROME_BROWSER_URL}\"]" \
+    "$@"
 }
