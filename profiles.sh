@@ -17,9 +17,9 @@ _codex_profile_default_app_path() {
 _codex_profile_brew_cask() {
   case "$1" in
     c) echo "google-chrome" ;;
-    p1) echo "google-chrome-beta" ;;
-    p2) echo "google-chrome-dev" ;;
-    p3) echo "google-chrome-canary" ;;
+    p1) echo "google-chrome@beta" ;;
+    p2) echo "google-chrome@dev" ;;
+    p3) echo "google-chrome@canary" ;;
     *) echo "google-chrome" ;;
   esac
 }
