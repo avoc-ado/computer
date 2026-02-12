@@ -39,8 +39,8 @@ _codex_env_load() {
     return 0
   fi
   if [[ -n "${CODEX_ENV_PROFILE:-}" && ! -f "${env_file}" ]]; then
-    echo "Missing Codex env file: ${env_file}" >&2
-    return 1
+    # Missing profile env should behave like an empty profile file.
+    return 0
   fi
   if [[ -f "${env_file}" ]]; then
     set -a
