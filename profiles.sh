@@ -4,11 +4,31 @@
 
 export CODEX_CHROME_PROFILES_ROOT="${HOME}/.cache/chrome-devtools-mcp/profiles"
 
+_codex_profile_default_app_path() {
+  case "$1" in
+    c) echo "/Applications/Google Chrome.app" ;;
+    p1) echo "/Applications/Google Chrome Beta.app" ;;
+    p2) echo "/Applications/Google Chrome Dev.app" ;;
+    p3) echo "/Applications/Google Chrome Canary.app" ;;
+    *) echo "/Applications/Google Chrome.app" ;;
+  esac
+}
+
+_codex_profile_brew_cask() {
+  case "$1" in
+    c) echo "google-chrome" ;;
+    p1) echo "google-chrome-beta" ;;
+    p2) echo "google-chrome-dev" ;;
+    p3) echo "google-chrome-canary" ;;
+    *) echo "google-chrome" ;;
+  esac
+}
+
 # Optional per-profile app overrides
-export CODEX_CHROME_APP_C="${CODEX_CHROME_APP_C:-/Applications/Google Chrome.app}"
-export CODEX_CHROME_APP_P1="${CODEX_CHROME_APP_P1:-/Applications/Google Chrome Beta.app}"
-export CODEX_CHROME_APP_P2="${CODEX_CHROME_APP_P2:-/Applications/Google Chrome Dev.app}"
-export CODEX_CHROME_APP_P3="${CODEX_CHROME_APP_P3:-/Applications/Google Chrome Canary.app}"
+export CODEX_CHROME_APP_C="${CODEX_CHROME_APP_C:-$(_codex_profile_default_app_path c)}"
+export CODEX_CHROME_APP_P1="${CODEX_CHROME_APP_P1:-$(_codex_profile_default_app_path p1)}"
+export CODEX_CHROME_APP_P2="${CODEX_CHROME_APP_P2:-$(_codex_profile_default_app_path p2)}"
+export CODEX_CHROME_APP_P3="${CODEX_CHROME_APP_P3:-$(_codex_profile_default_app_path p3)}"
 
 _codex_profile_port() {
   case "$1" in
@@ -46,6 +66,41 @@ _codex_chrome_is_ready() {
   curl -fsS --max-time 1 "${url}/json/version" >/dev/null 2>&1
 }
 
+_codex_prompt_install_profile_app() {
+  local profile="$1"
+  local app_path="$2"
+  local cask
+  cask="$(_codex_profile_brew_cask "${profile}")"
+
+  if ! command -v brew >/dev/null 2>&1; then
+    echo "Homebrew is not installed. Install manually: brew install --cask ${cask}" >&2
+    return 1
+  fi
+
+  if [[ ! -t 0 ]]; then
+    echo "Chrome app missing for profile ${profile}: ${app_path}" >&2
+    echo "Run manually: brew install --cask ${cask}" >&2
+    return 1
+  fi
+
+  echo "Chrome app not found for profile ${profile}: ${app_path}" >&2
+  printf "Install it now via Homebrew cask '%s'? [y/N]: " "${cask}" >&2
+
+  local answer
+  read -r answer
+  case "${answer}" in
+    y|Y|yes|YES)
+      brew install --cask "${cask}" || return 1
+      ;;
+    *)
+      echo "Install skipped." >&2
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
 _codex_launch_profile_chrome() {
   if [[ -z "${CODEX_CHROME_BROWSER_URL:-}" || -z "${CODEX_CHROME_PROFILE_DIR:-}" || -z "${CODEX_CHROME_APP:-}" ]]; then
     echo "Codex Chrome profile is not configured." >&2
@@ -57,9 +112,23 @@ _codex_launch_profile_chrome() {
   fi
 
   if [[ ! -d "${CODEX_CHROME_APP}" ]]; then
-    echo "Chrome app not found for profile ${CODEX_CHROME_PROFILE:-unknown}: ${CODEX_CHROME_APP}" >&2
-    echo "Install channel apps (beta/dev/canary) or override CODEX_CHROME_APP_P1/P2/P3 in your shell." >&2
-    return 1
+    local profile default_app
+    profile="${CODEX_CHROME_PROFILE:-c}"
+    default_app="$(_codex_profile_default_app_path "${profile}")"
+
+    if [[ -d "${default_app}" ]]; then
+      export CODEX_CHROME_APP="${default_app}"
+    else
+      _codex_prompt_install_profile_app "${profile}" "${CODEX_CHROME_APP}" || return 1
+      if [[ -d "${default_app}" ]]; then
+        export CODEX_CHROME_APP="${default_app}"
+      fi
+    fi
+
+    if [[ ! -d "${CODEX_CHROME_APP}" ]]; then
+      echo "Chrome app still not found for profile ${profile}: ${CODEX_CHROME_APP}" >&2
+      return 1
+    fi
   fi
 
   open -na "${CODEX_CHROME_APP}" --args \
@@ -131,10 +200,11 @@ p() {
   echo "${CODEX_ENV_PROFILE}"
 }
 
-# Remove any existing alias so the function wins
+# Keep c as shorthand for codex
 unalias c 2>/dev/null
+alias c='codex'
 
-c() {
+_codex_run() {
   if [[ -z "${CODEX_CHROME_PROFILE:-}" ]]; then
     _codex_profile_set "c"
   fi
@@ -147,4 +217,8 @@ c() {
     -c "model_providers.openai.env_key=OPENAI_API_KEY" \
     -c "mcp_servers.chrome-devtools.args=[\"chrome-devtools-mcp@latest\",\"--browserUrl=${CODEX_CHROME_BROWSER_URL}\"]" \
     "$@"
+}
+
+codex() {
+  _codex_run "$@"
 }
