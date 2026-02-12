@@ -24,6 +24,10 @@ _codex_profile_brew_cask() {
   esac
 }
 
+_codex_all_channel_casks() {
+  echo "google-chrome@beta google-chrome@dev google-chrome@canary"
+}
+
 # Optional per-profile app overrides
 export CODEX_CHROME_APP_C="${CODEX_CHROME_APP_C:-$(_codex_profile_default_app_path c)}"
 export CODEX_CHROME_APP_P1="${CODEX_CHROME_APP_P1:-$(_codex_profile_default_app_path p1)}"
@@ -73,8 +77,40 @@ _codex_prompt_install_profile_app() {
   cask="$(_codex_profile_brew_cask "${profile}")"
 
   if ! command -v brew >/dev/null 2>&1; then
-    echo "Homebrew is not installed. Install manually: brew install --cask ${cask}" >&2
+    if [[ "${profile}" == "c" ]]; then
+      echo "Homebrew is not installed. Install manually: brew install --cask ${cask}" >&2
+    else
+      echo "Homebrew is not installed. Install manually: brew install --cask $(_codex_all_channel_casks)" >&2
+    fi
     return 1
+  fi
+
+  if [[ "${profile}" != "c" ]]; then
+    local all_casks
+    all_casks="$(_codex_all_channel_casks)"
+
+    if [[ ! -t 0 ]]; then
+      echo "Chrome app missing for profile ${profile}: ${app_path}" >&2
+      echo "Run manually: brew install --cask ${all_casks}" >&2
+      return 1
+    fi
+
+    echo "Chrome app not found for profile ${profile}: ${app_path}" >&2
+    printf "Install all Chrome channel builds now (beta/dev/canary)? [Y/n]: " >&2
+
+    local answer
+    read -r answer
+    case "${answer}" in
+      n|N|no|NO)
+        echo "Install skipped." >&2
+        return 1
+        ;;
+      *)
+        brew install --cask google-chrome@beta google-chrome@dev google-chrome@canary || return 1
+        ;;
+    esac
+
+    return 0
   fi
 
   if [[ ! -t 0 ]]; then
