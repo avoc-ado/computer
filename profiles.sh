@@ -251,7 +251,8 @@ _codex_run() {
   command codex \
     -c model_providers.openai.name='"openai"' \
     -c "model_providers.openai.env_key=OPENAI_API_KEY" \
-    -c "mcp_servers.chrome-devtools.args=[\"chrome-devtools-mcp@latest\",\"--browserUrl=${CODEX_CHROME_BROWSER_URL}\"]" \
+    -c 'mcp_servers.chrome-devtools.command="npx"' \
+    -c "mcp_servers.chrome-devtools.args=[\"-y\",\"chrome-devtools-mcp@latest\",\"--browserUrl=${CODEX_CHROME_BROWSER_URL}\"]" \
     "$@"
 }
 
