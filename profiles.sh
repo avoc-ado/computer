@@ -1,5 +1,5 @@
 # Codex Chrome DevTools profiles
-# - Use p1/p2/p3 to select a profile
+# - Use p1..p10 to select a profile
 # - Use c to launch codex with profile-specific MCP args
 
 export CODEX_CHROME_PROFILES_ROOT="${HOME}/.cache/chrome-devtools-mcp/profiles"
@@ -10,6 +10,7 @@ _codex_profile_default_app_path() {
     p1) echo "/Applications/Google Chrome Beta.app" ;;
     p2) echo "/Applications/Google Chrome Dev.app" ;;
     p3) echo "/Applications/Google Chrome Canary.app" ;;
+    p4|p5|p6|p7|p8|p9|p10) echo "/Applications/Google Chrome.app" ;;
     *) echo "/Applications/Google Chrome.app" ;;
   esac
 }
@@ -20,6 +21,7 @@ _codex_profile_brew_cask() {
     p1) echo "google-chrome@beta" ;;
     p2) echo "google-chrome@dev" ;;
     p3) echo "google-chrome@canary" ;;
+    p4|p5|p6|p7|p8|p9|p10) echo "google-chrome" ;;
     *) echo "google-chrome" ;;
   esac
 }
@@ -33,6 +35,13 @@ export CODEX_CHROME_APP_C="${CODEX_CHROME_APP_C:-$(_codex_profile_default_app_pa
 export CODEX_CHROME_APP_P1="${CODEX_CHROME_APP_P1:-$(_codex_profile_default_app_path p1)}"
 export CODEX_CHROME_APP_P2="${CODEX_CHROME_APP_P2:-$(_codex_profile_default_app_path p2)}"
 export CODEX_CHROME_APP_P3="${CODEX_CHROME_APP_P3:-$(_codex_profile_default_app_path p3)}"
+export CODEX_CHROME_APP_P4="${CODEX_CHROME_APP_P4:-$(_codex_profile_default_app_path p4)}"
+export CODEX_CHROME_APP_P5="${CODEX_CHROME_APP_P5:-$(_codex_profile_default_app_path p5)}"
+export CODEX_CHROME_APP_P6="${CODEX_CHROME_APP_P6:-$(_codex_profile_default_app_path p6)}"
+export CODEX_CHROME_APP_P7="${CODEX_CHROME_APP_P7:-$(_codex_profile_default_app_path p7)}"
+export CODEX_CHROME_APP_P8="${CODEX_CHROME_APP_P8:-$(_codex_profile_default_app_path p8)}"
+export CODEX_CHROME_APP_P9="${CODEX_CHROME_APP_P9:-$(_codex_profile_default_app_path p9)}"
+export CODEX_CHROME_APP_P10="${CODEX_CHROME_APP_P10:-$(_codex_profile_default_app_path p10)}"
 
 _codex_profile_port() {
   case "$1" in
@@ -40,7 +49,14 @@ _codex_profile_port() {
     p1) echo 9223 ;;
     p2) echo 9224 ;;
     p3) echo 9225 ;;
-    *) echo 9226 ;;
+    p4) echo 9226 ;;
+    p5) echo 9227 ;;
+    p6) echo 9228 ;;
+    p7) echo 9229 ;;
+    p8) echo 9230 ;;
+    p9) echo 9231 ;;
+    p10) echo 9232 ;;
+    *) echo 9222 ;;
   esac
 }
 
@@ -50,6 +66,13 @@ _codex_profile_app_path() {
     p1) echo "${CODEX_CHROME_APP_P1}" ;;
     p2) echo "${CODEX_CHROME_APP_P2}" ;;
     p3) echo "${CODEX_CHROME_APP_P3}" ;;
+    p4) echo "${CODEX_CHROME_APP_P4}" ;;
+    p5) echo "${CODEX_CHROME_APP_P5}" ;;
+    p6) echo "${CODEX_CHROME_APP_P6}" ;;
+    p7) echo "${CODEX_CHROME_APP_P7}" ;;
+    p8) echo "${CODEX_CHROME_APP_P8}" ;;
+    p9) echo "${CODEX_CHROME_APP_P9}" ;;
+    p10) echo "${CODEX_CHROME_APP_P10}" ;;
     *) echo "${CODEX_CHROME_APP_C}" ;;
   esac
 }
@@ -228,9 +251,16 @@ _codex_env_load() {
 p1() { _codex_profile_set "p1"; }
 p2() { _codex_profile_set "p2"; }
 p3() { _codex_profile_set "p3"; }
+p4() { _codex_profile_set "p4"; }
+p5() { _codex_profile_set "p5"; }
+p6() { _codex_profile_set "p6"; }
+p7() { _codex_profile_set "p7"; }
+p8() { _codex_profile_set "p8"; }
+p9() { _codex_profile_set "p9"; }
+p10() { _codex_profile_set "p10"; }
 p() {
   if [[ -z "${CODEX_ENV_PROFILE:-}" ]]; then
-    echo "No codex profile. Run p1, p2 or p3."
+    echo "No codex profile. Run p1..p10."
     return 1
   fi
   echo "${CODEX_ENV_PROFILE}"
@@ -246,7 +276,6 @@ _codex_run() {
   fi
 
   _codex_env_load || return $?
-  _codex_launch_profile_chrome || return $?
 
   command codex \
     -c model_providers.openai.name='"openai"' \
