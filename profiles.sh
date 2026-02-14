@@ -118,18 +118,43 @@ _codex_title_text() {
   echo "${profile}; ${task}"
 }
 
+_codex_emit_osc_title() {
+  local title="$1"
+  # OSC 0/1/2 for broad terminal compatibility (window/tab/title variants).
+  printf '\033]0;%s\007\033]1;%s\007\033]2;%s\007' "${title}" "${title}" "${title}"
+}
+
 _codex_set_panel_title() {
   local title="$1"
   [[ "${COMPUTER_SET_TITLES:-1}" == "1" ]] || return 0
   [[ -n "${title}" ]] || return 0
-  [[ -t 1 ]] || return 0
+
+  local current_tty=""
 
   if [[ -n "${TMUX:-}" ]]; then
     tmux select-pane -T "${title}" >/dev/null 2>&1 || true
   fi
 
-  # OSC 0/1/2 for broad terminal compatibility (window/tab/title variants).
-  printf '\033]0;%s\007\033]1;%s\007\033]2;%s\007' "${title}" "${title}" "${title}"
+  if [[ -t 1 ]]; then
+    _codex_emit_osc_title "${title}"
+    current_tty="$(tty 2>/dev/null || true)"
+  fi
+
+  # When task/title updates happen inside Codex's internal agent shell, stdout
+  # may not be the same TTY as the parent CLI. Mirror title updates back.
+  if [[ -n "${COMPUTER_PARENT_TTY:-}" && "${COMPUTER_PARENT_TTY}" == /dev/* && -w "${COMPUTER_PARENT_TTY}" ]]; then
+    if [[ "${COMPUTER_PARENT_TTY}" != "${current_tty}" ]]; then
+      _codex_emit_osc_title "${title}" > "${COMPUTER_PARENT_TTY}" 2>/dev/null || true
+    fi
+  fi
+
+  if [[ -n "${COMPUTER_PARENT_TMUX_PANE:-}" ]]; then
+    if [[ -n "${COMPUTER_PARENT_TMUX_SOCKET:-}" ]]; then
+      tmux -S "${COMPUTER_PARENT_TMUX_SOCKET}" select-pane -t "${COMPUTER_PARENT_TMUX_PANE}" -T "${title}" >/dev/null 2>&1 || true
+    else
+      tmux select-pane -t "${COMPUTER_PARENT_TMUX_PANE}" -T "${title}" >/dev/null 2>&1 || true
+    fi
+  fi
 }
 
 
@@ -397,6 +422,21 @@ task() {
   fi
 
   case "$1" in
+    --help|-h)
+      cat <<'EOF_HELP'
+Usage: task [<title>|--clear|-c|--help|-h]
+
+Show current task:
+  task
+
+Set current task title:
+  task "short task title"
+
+Clear current task:
+  task --clear
+EOF_HELP
+      return 0
+      ;;
     --clear|-c)
       unset CODEX_TASK
       _codex_set_panel_title "$(_codex_title_text)"
@@ -447,9 +487,51 @@ fi
 
 _codex_run() {
   local common_root
+  local parent_tty=""
+  local parent_tmux_socket=""
+  local prev_parent_tty="${COMPUTER_PARENT_TTY-}"
+  local prev_parent_tmux_pane="${COMPUTER_PARENT_TMUX_PANE-}"
+  local prev_parent_tmux_socket="${COMPUTER_PARENT_TMUX_SOCKET-}"
+  local had_parent_tty="0"
+  local had_parent_tmux_pane="0"
+  local had_parent_tmux_socket="0"
+
+  if [[ ${+COMPUTER_PARENT_TTY} -eq 1 ]]; then
+    had_parent_tty="1"
+  fi
+  if [[ ${+COMPUTER_PARENT_TMUX_PANE} -eq 1 ]]; then
+    had_parent_tmux_pane="1"
+  fi
+  if [[ ${+COMPUTER_PARENT_TMUX_SOCKET} -eq 1 ]]; then
+    had_parent_tmux_socket="1"
+  fi
 
   if [[ -z "${CODEX_CHROME_PROFILE:-}" ]]; then
     _codex_profile_set "c"
+  fi
+
+  parent_tty="$(tty 2>/dev/null || true)"
+  if [[ "${parent_tty}" == /dev/* ]]; then
+    export COMPUTER_PARENT_TTY="${parent_tty}"
+  else
+    unset COMPUTER_PARENT_TTY
+  fi
+
+  if [[ -n "${TMUX_PANE:-}" ]]; then
+    export COMPUTER_PARENT_TMUX_PANE="${TMUX_PANE}"
+  else
+    unset COMPUTER_PARENT_TMUX_PANE
+  fi
+
+  if [[ -n "${TMUX:-}" ]]; then
+    parent_tmux_socket="${TMUX%%,*}"
+    if [[ -n "${parent_tmux_socket}" ]]; then
+      export COMPUTER_PARENT_TMUX_SOCKET="${parent_tmux_socket}"
+    else
+      unset COMPUTER_PARENT_TMUX_SOCKET
+    fi
+  else
+    unset COMPUTER_PARENT_TMUX_SOCKET
   fi
 
   _computer_vscode_tabs_title_hint_once
@@ -473,6 +555,25 @@ _codex_run() {
   fi
 
   local exit_code=$?
+
+  if [[ "${had_parent_tty}" == "1" ]]; then
+    export COMPUTER_PARENT_TTY="${prev_parent_tty}"
+  else
+    unset COMPUTER_PARENT_TTY
+  fi
+
+  if [[ "${had_parent_tmux_pane}" == "1" ]]; then
+    export COMPUTER_PARENT_TMUX_PANE="${prev_parent_tmux_pane}"
+  else
+    unset COMPUTER_PARENT_TMUX_PANE
+  fi
+
+  if [[ "${had_parent_tmux_socket}" == "1" ]]; then
+    export COMPUTER_PARENT_TMUX_SOCKET="${prev_parent_tmux_socket}"
+  else
+    unset COMPUTER_PARENT_TMUX_SOCKET
+  fi
+
   _codex_set_panel_title "$(_codex_title_text)"
   return ${exit_code}
 }
