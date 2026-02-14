@@ -14,6 +14,8 @@ export CODEX_TASK="${CODEX_TASK:-}"
 export COMPUTER_AUTO_SETUP_LANE_WORKTREE="${COMPUTER_AUTO_SETUP_LANE_WORKTREE:-1}"
 export COMPUTER_AUTO_CD_LANE_WORKTREE="${COMPUTER_AUTO_CD_LANE_WORKTREE:-1}"
 export COMPUTER_WORKTREE_SETUP_CMD="${COMPUTER_WORKTREE_SETUP_CMD:-}"
+export COMPUTER_TASK_BUS_DIR="${COMPUTER_TASK_BUS_DIR:-${TMPDIR:-/tmp}/computer-task-bus}"
+export COMPUTER_TASK_CHANNEL_FILE="${COMPUTER_TASK_CHANNEL_FILE:-}"
 
 
 _codex_repo_root() {
@@ -124,6 +126,90 @@ _codex_emit_osc_title() {
   printf '\033]0;%s\007\033]1;%s\007\033]2;%s\007' "${title}" "${title}" "${title}"
 }
 
+_codex_task_bus_dir() {
+  echo "${COMPUTER_TASK_BUS_DIR:-${TMPDIR:-/tmp}/computer-task-bus}"
+}
+
+_codex_profile_task_file() {
+  local profile="${1:-${CODEX_ENV_PROFILE:-}}"
+  local bus_dir=""
+  [[ -n "${profile}" ]] || return 0
+  bus_dir="$(_codex_task_bus_dir)"
+  echo "${bus_dir}/${profile}.task-title"
+}
+
+_codex_task_bus_write() {
+  local title="$1"
+  local file="$2"
+  local dir=""
+  [[ -n "${title}" ]] || return 0
+  [[ -n "${file}" ]] || return 0
+
+  dir="$(dirname "${file}")"
+  mkdir -p "${dir}" >/dev/null 2>&1 || return 0
+  printf '%s\n' "${title}" >| "${file}" 2>/dev/null || true
+}
+
+_codex_publish_title() {
+  local title="$1"
+  local profile_file=""
+  [[ -n "${title}" ]] || return 0
+
+  _codex_task_bus_write "${title}" "${COMPUTER_TASK_CHANNEL_FILE:-}"
+
+  profile_file="$(_codex_profile_task_file)"
+  _codex_task_bus_write "${title}" "${profile_file}"
+}
+
+_codex_apply_parent_title() {
+  local title="$1"
+  local parent_tty="$2"
+  local parent_tmux_pane="$3"
+  local parent_tmux_socket="$4"
+  [[ -n "${title}" ]] || return 0
+
+  if [[ -n "${parent_tty}" && "${parent_tty}" == /dev/* && -w "${parent_tty}" ]]; then
+    _codex_emit_osc_title "${title}" > "${parent_tty}" 2>/dev/null || true
+  fi
+
+  if [[ -n "${parent_tmux_pane}" ]]; then
+    if [[ -n "${parent_tmux_socket}" ]]; then
+      tmux -S "${parent_tmux_socket}" select-pane -t "${parent_tmux_pane}" -T "${title}" >/dev/null 2>&1 || true
+    else
+      tmux select-pane -t "${parent_tmux_pane}" -T "${title}" >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+_codex_watch_task_bus() {
+  local session_file="$1"
+  local profile_file="$2"
+  local parent_tty="$3"
+  local parent_tmux_pane="$4"
+  local parent_tmux_socket="$5"
+  local title=""
+  local last_title=""
+
+  while true; do
+    title=""
+
+    if [[ -n "${session_file}" && -r "${session_file}" ]]; then
+      IFS= read -r title < "${session_file}" || true
+    fi
+
+    if [[ -z "${title}" && -n "${profile_file}" && -r "${profile_file}" ]]; then
+      IFS= read -r title < "${profile_file}" || true
+    fi
+
+    if [[ -n "${title}" && "${title}" != "${last_title}" ]]; then
+      _codex_apply_parent_title "${title}" "${parent_tty}" "${parent_tmux_pane}" "${parent_tmux_socket}"
+      last_title="${title}"
+    fi
+
+    sleep 0.2 || break
+  done
+}
+
 _codex_set_panel_title() {
   local title="$1"
   [[ "${COMPUTER_SET_TITLES:-1}" == "1" ]] || return 0
@@ -155,6 +241,8 @@ _codex_set_panel_title() {
       tmux select-pane -t "${COMPUTER_PARENT_TMUX_PANE}" -T "${title}" >/dev/null 2>&1 || true
     fi
   fi
+
+  _codex_publish_title "${title}"
 }
 
 
@@ -492,9 +580,16 @@ _codex_run() {
   local prev_parent_tty="${COMPUTER_PARENT_TTY-}"
   local prev_parent_tmux_pane="${COMPUTER_PARENT_TMUX_PANE-}"
   local prev_parent_tmux_socket="${COMPUTER_PARENT_TMUX_SOCKET-}"
+  local prev_task_channel_file="${COMPUTER_TASK_CHANNEL_FILE-}"
   local had_parent_tty="0"
   local had_parent_tmux_pane="0"
   local had_parent_tmux_socket="0"
+  local had_task_channel_file="0"
+  local task_bus_dir=""
+  local session_task_file=""
+  local profile_task_file=""
+  local watcher_pid=""
+  local exit_code=0
 
   if [[ ${+COMPUTER_PARENT_TTY} -eq 1 ]]; then
     had_parent_tty="1"
@@ -504,6 +599,9 @@ _codex_run() {
   fi
   if [[ ${+COMPUTER_PARENT_TMUX_SOCKET} -eq 1 ]]; then
     had_parent_tmux_socket="1"
+  fi
+  if [[ ${+COMPUTER_TASK_CHANNEL_FILE} -eq 1 ]]; then
+    had_task_channel_file="1"
   fi
 
   if [[ -z "${CODEX_CHROME_PROFILE:-}" ]]; then
@@ -537,9 +635,42 @@ _codex_run() {
   _computer_vscode_tabs_title_hint_once
   _codex_set_panel_title "$(_codex_title_text)"
 
-  _codex_env_load || return $?
+  if ! _codex_env_load; then
+    exit_code=$?
+    if [[ "${had_task_channel_file}" == "1" ]]; then
+      export COMPUTER_TASK_CHANNEL_FILE="${prev_task_channel_file}"
+    else
+      unset COMPUTER_TASK_CHANNEL_FILE
+    fi
+    if [[ "${had_parent_tty}" == "1" ]]; then
+      export COMPUTER_PARENT_TTY="${prev_parent_tty}"
+    else
+      unset COMPUTER_PARENT_TTY
+    fi
+    if [[ "${had_parent_tmux_pane}" == "1" ]]; then
+      export COMPUTER_PARENT_TMUX_PANE="${prev_parent_tmux_pane}"
+    else
+      unset COMPUTER_PARENT_TMUX_PANE
+    fi
+    if [[ "${had_parent_tmux_socket}" == "1" ]]; then
+      export COMPUTER_PARENT_TMUX_SOCKET="${prev_parent_tmux_socket}"
+    else
+      unset COMPUTER_PARENT_TMUX_SOCKET
+    fi
+    return ${exit_code}
+  fi
 
   common_root="$(_codex_repo_common_root)"
+
+  task_bus_dir="$(_codex_task_bus_dir)"
+  if [[ -n "${task_bus_dir}" ]]; then
+    session_task_file="${task_bus_dir}/session.${$}.${RANDOM}.task-title"
+    profile_task_file="$(_codex_profile_task_file)"
+    _codex_task_bus_write "$(_codex_title_text)" "${session_task_file}"
+    export COMPUTER_TASK_CHANNEL_FILE="${session_task_file}"
+    _codex_watch_task_bus "${session_task_file}" "${profile_task_file}" "${COMPUTER_PARENT_TTY:-}" "${COMPUTER_PARENT_TMUX_PANE:-}" "${COMPUTER_PARENT_TMUX_SOCKET:-}" &
+    watcher_pid=$!
+  fi
 
   if [[ -n "${common_root}" && -d "${common_root}" ]]; then
     command codex \
@@ -554,7 +685,22 @@ _codex_run() {
       "$@"
   fi
 
-  local exit_code=$?
+  exit_code=$?
+
+  if [[ -n "${watcher_pid}" ]]; then
+    kill "${watcher_pid}" >/dev/null 2>&1 || true
+    wait "${watcher_pid}" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "${session_task_file}" ]]; then
+    rm -f "${session_task_file}" >/dev/null 2>&1 || true
+  fi
+
+  if [[ "${had_task_channel_file}" == "1" ]]; then
+    export COMPUTER_TASK_CHANNEL_FILE="${prev_task_channel_file}"
+  else
+    unset COMPUTER_TASK_CHANNEL_FILE
+  fi
 
   if [[ "${had_parent_tty}" == "1" ]]; then
     export COMPUTER_PARENT_TTY="${prev_parent_tty}"
