@@ -81,3 +81,17 @@ For title updates to render in VS Code terminal tabs, set:
 ```json
 "terminal.integrated.tabs.title": "${sequence}"
 ```
+
+## Chrome MCP Focus Policy
+When using Chrome MCP, avoid commands that foreground Chrome on macOS.
+
+Rules:
+1. Use `navigate_page` as the default for opening a URL.
+2. Treat `new_page` as foregrounding behavior and avoid it unless the user explicitly asks for a new tab/page.
+3. If the user asks to avoid bringing Chrome to front, only use `navigate_page`.
+
+## Frontend Refresh Rule
+For React, Next.js, and React Native development, perform a full page/app refresh after code changes when validating behavior.
+
+Reason:
+- Hot module reloading can enter a hard-error state during half-edited code/runtime error windows, and the HMR retry path may not recover cleanly without a full refresh.
