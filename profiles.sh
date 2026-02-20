@@ -109,6 +109,54 @@ EOF_HINT
   _computer_prompt_vscode_tabs_title
 }
 
+_computer_tmux_conf_has_setting() {
+  local conf_file="$1"
+  local setting="$2"
+  [[ -f "${conf_file}" ]] || return 1
+  grep -Eq "${setting}" "${conf_file}"
+}
+
+_computer_tmux_scrollback_prompt_once() {
+  [[ -t 0 && -t 1 ]] || return 0
+  [[ "${_COMPUTER_TMUX_SCROLLBACK_HINTED:-0}" == "1" ]] && return 0
+  export _COMPUTER_TMUX_SCROLLBACK_HINTED=1
+
+  local conf_file="${HOME}/.tmux.conf"
+  local has_mouse="0"
+  local has_history="0"
+  local answer=""
+
+  if _computer_tmux_conf_has_setting "${conf_file}" '^[[:space:]]*set(-option)?[[:space:]]+-g[[:space:]]+mouse[[:space:]]+on([[:space:]]|$)'; then
+    has_mouse="1"
+  fi
+  if _computer_tmux_conf_has_setting "${conf_file}" '^[[:space:]]*set(-option)?[[:space:]]+-g[[:space:]]+history-limit[[:space:]]+[0-9]+'; then
+    has_history="1"
+  fi
+
+  if [[ "${has_mouse}" == "1" && "${has_history}" == "1" ]]; then
+    return 0
+  fi
+
+  echo ""
+  echo "[computer] Preserve terminal scrolling behavior in tmux?"
+  echo "[computer] This enables mouse scrolling and increases scrollback in ${conf_file}."
+  echo -n "[computer] Update tmux config now? [y/N]: "
+  read -r answer
+  case "${answer}" in
+    y|Y|yes|YES)
+      {
+        echo ""
+        [[ "${has_mouse}" == "1" ]] || echo "set -g mouse on"
+        [[ "${has_history}" == "1" ]] || echo "set -g history-limit 200000"
+      } >> "${conf_file}"
+      tmux set-option -g mouse on >/dev/null 2>&1 || true
+      tmux set-option -g history-limit 200000 >/dev/null 2>&1 || true
+      ;;
+    *)
+      ;;
+  esac
+}
+
 _codex_title_text() {
   local profile="${CODEX_ENV_PROFILE:-no-lane}"
   local task="${CODEX_TASK:-}"
@@ -142,11 +190,31 @@ _codex_task_bus_write() {
   printf '%s\n' "${title}" >| "${file}" 2>/dev/null || true
 }
 
+_codex_task_channel_file() {
+  local channel="${COMPUTER_TASK_CHANNEL_FILE:-}"
+  local tmux_session=""
+  local tmux_env=""
+
+  if [[ -z "${channel}" && -n "${TMUX:-}" ]]; then
+    tmux_session="$(tmux display-message -p "#{session_name}" 2>/dev/null || true)"
+    if [[ -n "${tmux_session}" ]]; then
+      tmux_env="$(tmux show-environment -t "${tmux_session}" COMPUTER_TASK_CHANNEL_FILE 2>/dev/null || true)"
+      if [[ "${tmux_env}" == COMPUTER_TASK_CHANNEL_FILE=* ]]; then
+        channel="${tmux_env#*=}"
+      fi
+    fi
+  fi
+
+  echo "${channel}"
+}
+
 _codex_publish_title() {
   local title="$1"
+  local channel=""
   [[ -n "${title}" ]] || return 0
 
-  _codex_task_bus_write "${title}" "${COMPUTER_TASK_CHANNEL_FILE:-}"
+  channel="$(_codex_task_channel_file)"
+  _codex_task_bus_write "${title}" "${channel}"
 }
 
 _codex_apply_parent_title() {
@@ -470,25 +538,59 @@ _codex_profile_set() {
 
 _computer_tmux_wrap_profile() {
   local profile="$1"
+  shift
+  local -a cmd_args=("$@")
   local session=""
+  local cmd_str=""
+  local created_session=0
+  local tty_name=""
+  local task_bus_dir=""
+  local session_task_file=""
+  local parent_tty=""
+  local parent_tmux_pane=""
+  local parent_tmux_socket=""
+  local watcher_pid=""
+  local initial_title=""
 
   if ! _computer_is_lane_profile "${profile}"; then
     _codex_profile_set "${profile}"
-    return $?
+    if (( ${#cmd_args[@]} )); then
+      "${cmd_args[@]}"
+      return $?
+    fi
+    return 0
   fi
 
   if [[ -n "${TMUX:-}" || "${COMPUTER_TMUX_LANES:-1}" != "1" ]]; then
-    _codex_profile_set "${profile}"
-    return $?
+    _codex_profile_set "${profile}" || return $?
+    if (( ${#cmd_args[@]} )); then
+      "${cmd_args[@]}"
+      return $?
+    fi
+    return 0
   fi
 
   if ! command -v tmux >/dev/null 2>&1; then
-    _codex_profile_set "${profile}"
-    return $?
+    _codex_profile_set "${profile}" || return $?
+    if (( ${#cmd_args[@]} )); then
+      "${cmd_args[@]}"
+      return $?
+    fi
+    return 0
   fi
 
   session="codex-${profile}"
+  tty_name="$(tty 2>/dev/null || true)"
+  if [[ "${tty_name}" == /dev/* ]]; then
+    tty_name="${tty_name#/dev/}"
+  else
+    tty_name="no-tty-${$}"
+  fi
+  tty_name="${tty_name//[^a-zA-Z0-9]/_}"
+  session="${session}-${tty_name}"
+
   if ! tmux has-session -t "${session}" 2>/dev/null; then
+    created_session=1
     tmux new-session -d -s "${session}" -n "${profile}"
     tmux send-keys -t "${session}" "${profile}" C-m
   fi
@@ -496,7 +598,48 @@ _computer_tmux_wrap_profile() {
   tmux set-option -t "${session}" status off >/dev/null 2>&1 || true
   tmux set-option -t "${session}" pane-border-status off >/dev/null 2>&1 || true
 
+  _computer_tmux_scrollback_prompt_once
+
+  task_bus_dir="$(_codex_task_bus_dir)"
+  if [[ -n "${task_bus_dir}" ]]; then
+    session_task_file="${task_bus_dir}/session.${session}.task-title"
+    tmux set-environment -t "${session}" COMPUTER_TASK_CHANNEL_FILE "${session_task_file}" >/dev/null 2>&1 || true
+    initial_title="$(tmux display-message -p -t "${session}" "#{pane_title}" 2>/dev/null || true)"
+    if [[ -z "${initial_title}" ]]; then
+      initial_title="${profile}; no-task"
+    fi
+    _codex_task_bus_write "${initial_title}" "${session_task_file}"
+
+    parent_tty="$(tty 2>/dev/null || true)"
+    if [[ "${parent_tty}" != /dev/* ]]; then
+      parent_tty=""
+    fi
+    parent_tmux_pane="${TMUX_PANE:-}"
+    if [[ -n "${TMUX:-}" ]]; then
+      parent_tmux_socket="${TMUX%%,*}"
+    fi
+
+    if [[ -n "${parent_tty}" || -n "${parent_tmux_pane}" ]]; then
+      _codex_watch_task_bus "${session_task_file}" "${parent_tty}" "${parent_tmux_pane}" "${parent_tmux_socket}" &
+      watcher_pid=$!
+    fi
+  fi
+
+  if (( ${#cmd_args[@]} )); then
+    if (( ! created_session )); then
+      tmux send-keys -t "${session}" "${profile}" C-m
+    fi
+    cmd_str="${(j: :)cmd_args}"
+    tmux send-keys -l -t "${session}" -- "${cmd_str}"
+    tmux send-keys -t "${session}" C-m
+  fi
+
   tmux attach -t "${session}"
+
+  if [[ -n "${watcher_pid}" ]]; then
+    kill "${watcher_pid}" >/dev/null 2>&1 || true
+    wait "${watcher_pid}" >/dev/null 2>&1 || true
+  fi
 }
 task() {
   if [[ $# -eq 0 ]]; then
@@ -537,22 +680,24 @@ EOF_HELP
 }
 
 
-p1() { _computer_tmux_wrap_profile "p1"; }
-p2() { _computer_tmux_wrap_profile "p2"; }
-p3() { _computer_tmux_wrap_profile "p3"; }
-p4() { _computer_tmux_wrap_profile "p4"; }
-p5() { _computer_tmux_wrap_profile "p5"; }
-p6() { _computer_tmux_wrap_profile "p6"; }
-p7() { _computer_tmux_wrap_profile "p7"; }
-p8() { _computer_tmux_wrap_profile "p8"; }
-p9() { _computer_tmux_wrap_profile "p9"; }
-p10() { _computer_tmux_wrap_profile "p10"; }
+p1() { _computer_tmux_wrap_profile "p1" "$@"; }
+p2() { _computer_tmux_wrap_profile "p2" "$@"; }
+p3() { _computer_tmux_wrap_profile "p3" "$@"; }
+p4() { _computer_tmux_wrap_profile "p4" "$@"; }
+p5() { _computer_tmux_wrap_profile "p5" "$@"; }
+p6() { _computer_tmux_wrap_profile "p6" "$@"; }
+p7() { _computer_tmux_wrap_profile "p7" "$@"; }
+p8() { _computer_tmux_wrap_profile "p8" "$@"; }
+p9() { _computer_tmux_wrap_profile "p9" "$@"; }
+p10() { _computer_tmux_wrap_profile "p10" "$@"; }
 lane() {
   if [[ $# -eq 0 ]]; then
     p
     return $?
   fi
-  _computer_tmux_wrap_profile "$1"
+  local profile="$1"
+  shift
+  _computer_tmux_wrap_profile "${profile}" "$@"
 }
 p() {
   if [[ -z "${CODEX_ENV_PROFILE:-}" ]]; then
@@ -590,33 +735,10 @@ _codex_run() {
   local common_root
   local -a codex_cmd
   local base_cmd="${CODEX_BASE_CMD:-codex}"
-  local parent_tty=""
-  local parent_tmux_pane=""
-  local parent_tmux_socket=""
-  local prev_task_channel_file="${COMPUTER_TASK_CHANNEL_FILE-}"
-  local had_task_channel_file="0"
-  local task_bus_dir=""
-  local session_task_file=""
-  local watcher_pid=""
   local exit_code=0
-
-  if [[ ${+COMPUTER_TASK_CHANNEL_FILE} -eq 1 ]]; then
-    had_task_channel_file="1"
-  fi
 
   if [[ -z "${CODEX_CHROME_PROFILE:-}" ]]; then
     _codex_profile_set "c"
-  fi
-
-  parent_tty="$(tty 2>/dev/null || true)"
-  if [[ "${parent_tty}" != /dev/* ]]; then
-    parent_tty=""
-  fi
-
-  parent_tmux_pane="${TMUX_PANE:-}"
-
-  if [[ -n "${TMUX:-}" ]]; then
-    parent_tmux_socket="${TMUX%%,*}"
   fi
 
   _computer_vscode_tabs_title_hint_once
@@ -634,46 +756,21 @@ _codex_run() {
 
   common_root="$(_codex_repo_common_root)"
 
-  task_bus_dir="$(_codex_task_bus_dir)"
-  if [[ -n "${task_bus_dir}" ]]; then
-    session_task_file="${task_bus_dir}/session.${$}.${RANDOM}.task-title"
-    _codex_task_bus_write "$(_codex_title_text)" "${session_task_file}"
-    export COMPUTER_TASK_CHANNEL_FILE="${session_task_file}"
-    _codex_watch_task_bus "${session_task_file}" "${parent_tty}" "${parent_tmux_pane}" "${parent_tmux_socket}" &
-    watcher_pid=$!
-  fi
-
   eval "codex_cmd=(${base_cmd})"
 
+  local -a add_dir_args=()
   if [[ -n "${common_root}" && -d "${common_root}" ]]; then
-    command "${codex_cmd[@]}" \
-      --add-dir "${common_root}" \
-      -c 'mcp_servers.chrome-devtools.command="npx"' \
-      -c "mcp_servers.chrome-devtools.args=[\"-y\",\"chrome-devtools-mcp@latest\",\"--user-data-dir=${CODEX_CHROME_PROFILE_DIR}\"]" \
-      "$@"
-  else
-    command "${codex_cmd[@]}" \
-      -c 'mcp_servers.chrome-devtools.command="npx"' \
-      -c "mcp_servers.chrome-devtools.args=[\"-y\",\"chrome-devtools-mcp@latest\",\"--user-data-dir=${CODEX_CHROME_PROFILE_DIR}\"]" \
-      "$@"
+    add_dir_args=(--add-dir "${common_root}")
   fi
+
+  command "${codex_cmd[@]}" \
+    "${add_dir_args[@]}" \
+    -c 'mcp_servers.chrome-devtools.command="npx"' \
+    -c 'mcp_servers.chrome-devtools.startup_timeout_sec=60' \
+    -c "mcp_servers.chrome-devtools.args=[\"-y\",\"chrome-devtools-mcp@latest\",\"--user-data-dir=${CODEX_CHROME_PROFILE_DIR}\"]" \
+    "$@"
 
   exit_code=$?
-
-  if [[ -n "${watcher_pid}" ]]; then
-    kill "${watcher_pid}" >/dev/null 2>&1 || true
-    wait "${watcher_pid}" >/dev/null 2>&1 || true
-  fi
-
-  if [[ -n "${session_task_file}" ]]; then
-    rm -f "${session_task_file}" >/dev/null 2>&1 || true
-  fi
-
-  if [[ "${had_task_channel_file}" == "1" ]]; then
-    export COMPUTER_TASK_CHANNEL_FILE="${prev_task_channel_file}"
-  else
-    unset COMPUTER_TASK_CHANNEL_FILE
-  fi
 
   _codex_set_panel_title "$(_codex_title_text)"
   return ${exit_code}
